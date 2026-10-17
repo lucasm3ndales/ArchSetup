@@ -5,6 +5,7 @@ pub const REQUIRED_PACKAGES: &[&str] = &[
     "inter-font",
     "ttf-fira-code",
     "ksuperkey",
+    "xfce4-whiskermenu-plugin",
     "nordic-theme",
     "zafiro-icon-theme",
     "xcursor-hackneyed-light",
@@ -52,6 +53,27 @@ pub fn check_xfce(facts: XfceFacts<'_>) -> Result<(), String> {
 }
 
 pub const AUTOSTART: &str = "[Desktop Entry]\nType=Application\nName=ArchLinuxSetup Super key\nComment=Opens the application menu when pressing the Super key\nExec=ksuperkey\nOnlyShowIn=XFCE;\nTerminal=false\n";
+pub const PASYSTRAY_DISABLED: &str =
+    "[Desktop Entry]\nType=Application\nName=PulseAudio System Tray\nHidden=true\n";
+pub const RETIRED_MEDIA_SHORTCUTS: &[(&str, &str)] = &[
+    (
+        "XF86AudioRaiseVolume",
+        "pactl set-sink-volume @DEFAULT_SINK@ +5%",
+    ),
+    (
+        "XF86AudioLowerVolume",
+        "pactl set-sink-volume @DEFAULT_SINK@ -5%",
+    ),
+    ("XF86AudioMute", "pactl set-sink-mute @DEFAULT_SINK@ toggle"),
+    (
+        "XF86AudioMicMute",
+        "pactl set-source-mute @DEFAULT_SOURCE@ toggle",
+    ),
+    ("XF86AudioPlay", "playerctl play-pause"),
+    ("XF86AudioNext", "playerctl next"),
+    ("XF86AudioPrev", "playerctl previous"),
+    ("XF86AudioStop", "playerctl stop"),
+];
 pub const NATURAL_SCROLL: &str = "Section \"InputClass\"\n    Identifier \"ArchLinuxSetup touchpad natural scroll\"\n    MatchIsTouchpad \"on\"\n    MatchDevicePath \"/dev/input/event*\"\n    Driver \"libinput\"\n    Option \"NaturalScrolling\" \"true\"\nEndSection\n";
 pub const TAPPING: &str = "Section \"InputClass\"\n    Identifier \"ArchLinuxSetup Acer touchpad tap-to-click\"\n    MatchIsTouchpad \"on\"\n    MatchDevicePath \"/dev/input/event*\"\n    Driver \"libinput\"\n    Option \"Tapping\" \"true\"\nEndSection\n";
 
@@ -75,6 +97,7 @@ pub struct PanelPlan {
     pub pager_id: u32,
     pub systray_id: u32,
     pub pulseaudio_id: u32,
+    pub retired_tray_popup_id: Option<u32>,
     pub pager_gap_id: u32,
     pub status_gap_id: u32,
     pub session_gap_id: u32,
@@ -93,6 +116,7 @@ pub fn plan_panels(
     legacy_keylock: Option<u32>,
     recorded_kbdleds: Option<u32>,
     docklike_available: bool,
+    whisker_available: bool,
 ) -> Result<PanelPlan, String> {
     let top = panels
         .iter()
@@ -125,6 +149,18 @@ pub fn plan_panels(
         .copied();
     let (menu_id, menu_type, menu_command) = if let Some(id) = existing_whisker {
         (id, "whiskermenu", "xfce4-popup-whiskermenu")
+    } else if whisker_available {
+        let existing_applications = top
+            .plugins
+            .iter()
+            .find(|id| kind(id) == "applicationsmenu")
+            .copied();
+        let id = if let Some(id) = existing_applications {
+            id
+        } else {
+            allocate("whiskermenu")?
+        };
+        (id, "whiskermenu", "xfce4-popup-whiskermenu")
     } else {
         (
             allocate("applicationsmenu")?,
@@ -144,6 +180,11 @@ pub fn plan_panels(
     let actions_id = allocate("actions")?;
     let clock_id = allocate("clock")?;
     drop(allocate);
+    let retired_tray_popup_id = top
+        .plugins
+        .iter()
+        .find(|id| kind(id) == "archsetup-tray-popup")
+        .copied();
     let legacy_genmon_id =
         legacy_keylock.filter(|id| top.plugins.contains(id) && kind(id) == "genmon");
     let separators = top
@@ -181,6 +222,7 @@ pub fn plan_panels(
         ]
         .contains(id)
             || Some(*id) == legacy_genmon_id
+            || Some(*id) == retired_tray_popup_id
         {
             continue;
         }
@@ -212,6 +254,7 @@ pub fn plan_panels(
         pager_id,
         systray_id,
         pulseaudio_id,
+        retired_tray_popup_id,
         pager_gap_id,
         status_gap_id,
         session_gap_id,
@@ -271,7 +314,6 @@ const PANEL_CSS_END: &str = "/* ArchSetup panel: end */";
 
 // Scaled from Zafiro Dark's im-user outline and drawn at the panel's native size.
 pub const PANEL_USER_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 32 32\"><circle cx=\"16\" cy=\"10\" r=\"5.5\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2.5\"/><path d=\"M5.5 27c0-5 4.7-8.5 10.5-8.5S26.5 22 26.5 27Z\" fill=\"none\" stroke=\"#ffffff\" stroke-width=\"2.5\" stroke-linejoin=\"round\"/></svg>\n";
-
 pub fn render_panel_user_svg(_existing: &str) -> String {
     PANEL_USER_SVG.to_owned()
 }
@@ -469,7 +511,7 @@ mod tests {
             (6, "systray".into()),
             (7, "clock".into()),
         ]);
-        let plan = plan_panels(&panels, &types, 7, None, Some(5), false).unwrap();
+        let plan = plan_panels(&panels, &types, 7, None, Some(5), false, false).unwrap();
         assert_eq!(plan.top_id, 1);
         assert_eq!(plan.remove_panels, vec![2]);
         assert_eq!(plan.spacer_id, 10);
@@ -497,7 +539,7 @@ mod tests {
             (9, "systray".into()),
             (10, "clock".into()),
         ]);
-        let plan = plan_panels(&panels, &types, 10, None, Some(8), false).unwrap();
+        let plan = plan_panels(&panels, &types, 10, None, Some(8), false, false).unwrap();
         assert_eq!(plan.spacer_id, 3);
         assert_eq!(plan.actions_id, 12);
         assert_eq!(
@@ -518,9 +560,40 @@ mod tests {
             None,
             Some(8),
             false,
+            false,
         )
         .unwrap();
         assert_eq!(repeat.plugin_order, plan.plugin_order);
+    }
+
+    #[test]
+    fn retires_only_archsetup_popup_and_places_status_between_pager_and_user() {
+        let panels = vec![Panel {
+            id: 1,
+            position: "p=6;x=0;y=0".into(),
+            plugins: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        }];
+        let types = HashMap::from([
+            (1, "applicationsmenu".into()),
+            (2, "docklike".into()),
+            (3, "separator".into()),
+            (4, "pager".into()),
+            (5, "systray".into()),
+            (6, "archsetup-tray-popup".into()),
+            (7, "pulseaudio".into()),
+            (8, "separator".into()),
+            (9, "actions".into()),
+            (10, "clock".into()),
+        ]);
+        let plan = plan_panels(&panels, &types, 10, None, None, true, false).unwrap();
+        assert_eq!(plan.retired_tray_popup_id, Some(6));
+        assert_eq!(plan.pulseaudio_id, 7);
+        assert!(!plan.plugin_order.contains(&6));
+        assert!(plan.plugin_order.contains(&7));
+        let pager = plan.plugin_order.iter().position(|id| *id == 4).unwrap();
+        let wifi_bluetooth = plan.plugin_order.iter().position(|id| *id == 5).unwrap();
+        let user = plan.plugin_order.iter().position(|id| *id == 9).unwrap();
+        assert!(pager < wifi_bluetooth && wifi_bluetooth < user);
     }
 
     #[test]
@@ -537,7 +610,7 @@ mod tests {
             (4, "actions".into()),
             (5, "clock".into()),
         ]);
-        let plan = plan_panels(&panels, &types, 5, None, None, true).unwrap();
+        let plan = plan_panels(&panels, &types, 5, None, None, true, false).unwrap();
         assert_eq!(plan.windowlist_type, "docklike");
         assert_eq!(plan.windowlist_id, 6);
         assert!(!plan.plugin_order.contains(&2));
@@ -547,11 +620,35 @@ mod tests {
     }
 
     #[test]
+    fn reuses_applications_button_when_switching_to_whisker() {
+        let panels = vec![Panel {
+            id: 1,
+            position: "p=6;x=0;y=0".into(),
+            plugins: vec![1, 2, 3],
+        }];
+        let types = HashMap::from([
+            (1, "applicationsmenu".into()),
+            (2, "tasklist".into()),
+            (3, "clock".into()),
+        ]);
+        let plan = plan_panels(&panels, &types, 3, None, None, false, true).unwrap();
+        assert_eq!(plan.menu_id, 1);
+        assert_eq!(plan.menu_type, "whiskermenu");
+        assert_eq!(plan.menu_command, "xfce4-popup-whiskermenu");
+        assert_eq!(plan.plugin_order.iter().filter(|id| **id == 1).count(), 1);
+    }
+
+    #[test]
     fn panel_css_and_docklike_settings_preserve_unrelated_content() {
         let css = render_panel_css("button { color: red; }\n");
         assert!(css.starts_with("button { color: red; }\n"));
         assert!(css.contains("panel-user.svg"));
         assert_eq!(render_panel_css(&css), css);
+        let old_css = css.replace(
+            "menu { font-family",
+            "#systray-6 > box > button { opacity: 0; }\nmenu { font-family",
+        );
+        assert_eq!(render_panel_css(&old_css), css);
         let rc =
             render_docklike_rc("[user]\npinned=foo;\nshowPreviews=false\n[other]\nkey=value\n");
         assert!(rc.contains("pinned=foo;\n"));
@@ -602,7 +699,7 @@ mod tests {
             (5, "genmon".into()),
             (18, "systray".into()),
         ]);
-        let plan = plan_panels(&panels, &types, 18, Some(5), None, false).unwrap();
+        let plan = plan_panels(&panels, &types, 18, Some(5), None, false, false).unwrap();
         assert_eq!(plan.menu_id, 2);
         assert_eq!(plan.menu_command, "xfce4-popup-whiskermenu");
         assert_eq!(plan.legacy_genmon_id, Some(5));

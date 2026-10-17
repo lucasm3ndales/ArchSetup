@@ -12,6 +12,7 @@ impl LinuxDesktop {
         let plan = self.panel_plan()?;
         if !plan.remove_panels.is_empty()
             || plan.legacy_genmon_id.is_some()
+            || plan.retired_tray_popup_id.is_some()
             || plan.remove_legacy_marker
             || plan.remove_kbdleds_marker
         {
@@ -72,7 +73,7 @@ impl LinuxDesktop {
             ("xfce4-panel", format!("{pager}/miniature-view"), "true"),
             ("xfce4-panel", format!("{pager}/rows"), pager_rows),
             ("xfce4-panel", systray.clone(), "systray"),
-            ("xfce4-panel", format!("{systray}/hide-new-items"), "false"),
+            ("xfce4-panel", format!("{systray}/hide-new-items"), "true"),
             ("xfce4-panel", audio.clone(), "pulseaudio"),
             (
                 "xfce4-panel",
@@ -129,6 +130,32 @@ impl LinuxDesktop {
                 return Ok(false);
             }
         }
+        for (known, hidden) in [
+            ("known-items", "hidden-items"),
+            ("known-legacy-items", "hidden-legacy-items"),
+        ] {
+            let known = read_string_array(&format!("{systray}/{known}"));
+            let hidden = read_string_array(&format!("{systray}/{hidden}"));
+            if known.iter().any(|name| !hidden.contains(name)) {
+                return Ok(false);
+            }
+        }
+        for (key, command) in desktop::RETIRED_MEDIA_SHORTCUTS {
+            if maybe_output(
+                "xfconf-query",
+                &[
+                    "-c",
+                    "xfce4-keyboard-shortcuts",
+                    "-p",
+                    &format!("/commands/custom/{key}"),
+                ],
+            )
+            .as_deref()
+                == Some(command)
+            {
+                return Ok(false);
+            }
+        }
         for (id, expand) in [
             (plan.spacer_id, true),
             (plan.pager_gap_id, false),
@@ -169,10 +196,6 @@ impl LinuxDesktop {
                 desktop::render_cursor_index as fn(&str) -> String,
             ),
             (
-                self.config_dir.join("gtk-3.0/gtk.css"),
-                desktop::render_panel_css as fn(&str) -> String,
-            ),
-            (
                 self.config_dir.join("archsetup/panel-user.svg"),
                 desktop::render_panel_user_svg as fn(&str) -> String,
             ),
@@ -183,6 +206,12 @@ impl LinuxDesktop {
             if render(&current) != current {
                 return Ok(false);
             }
+        }
+        let Ok(css) = fs::read_to_string(self.config_dir.join("gtk-3.0/gtk.css")) else {
+            return Ok(false);
+        };
+        if desktop::render_panel_css(&css) != css {
+            return Ok(false);
         }
         if plan.windowlist_type == "docklike" {
             let path = self
@@ -199,6 +228,13 @@ impl LinuxDesktop {
             .ok()
             .as_deref()
             != Some(desktop::AUTOSTART)
+        {
+            return Ok(false);
+        }
+        if fs::read_to_string(self.config_dir.join("autostart/pasystray.desktop"))
+            .ok()
+            .as_deref()
+            != Some(desktop::PASYSTRAY_DISABLED)
         {
             return Ok(false);
         }
@@ -256,6 +292,23 @@ impl LinuxDesktop {
             let property = format!("/plugins/plugin-{id}");
             let kind = maybe_output("xfconf-query", &["-c", "xfce4-panel", "-p", &property])
                 .unwrap_or_default();
+            let kind = if kind == "genmon"
+                && maybe_output(
+                    "xfconf-query",
+                    &[
+                        "-c",
+                        "xfce4-panel",
+                        "-p",
+                        &format!("/plugins/plugin-{id}/archsetup-tray-popup"),
+                    ],
+                )
+                .as_deref()
+                    == Some("true")
+            {
+                "archsetup-tray-popup".to_owned()
+            } else {
+                kind
+            };
             plugin_types.insert(*id, kind);
         }
         let legacy_path = format!("/panels/panel-{}/archlinuxsetup-keylocks-id", top.id);
@@ -264,6 +317,8 @@ impl LinuxDesktop {
         let recorded = read_id(&kbdleds_path);
         let docklike_available =
             Path::new("/usr/share/xfce4/panel/plugins/docklike.desktop").is_file();
+        let whisker_available =
+            Path::new("/usr/share/xfce4/panel/plugins/whiskermenu.desktop").is_file();
         desktop::plan_panels(
             &panels,
             &plugin_types,
@@ -271,6 +326,7 @@ impl LinuxDesktop {
             legacy,
             recorded,
             docklike_available,
+            whisker_available,
         )
     }
 
@@ -286,6 +342,7 @@ impl LinuxDesktop {
                     .spawn()
                     .map_err(|error| format!("could not start ksuperkey: {error}"))?;
             }
+            self.stop_pasystray()?;
             return Ok(());
         }
         let plan = self.panel_plan()?;
@@ -325,6 +382,21 @@ impl LinuxDesktop {
             "string",
             plan.menu_command,
         )?;
+        for (key, command) in desktop::RETIRED_MEDIA_SHORTCUTS {
+            let property = format!("/commands/custom/{key}");
+            if maybe_output(
+                "xfconf-query",
+                &["-c", "xfce4-keyboard-shortcuts", "-p", &property],
+            )
+            .as_deref()
+                == Some(command)
+            {
+                run(
+                    "xfconf-query",
+                    &["-c", "xfce4-keyboard-shortcuts", "-p", &property, "--reset"],
+                )?;
+            }
+        }
 
         for id in &plan.remove_panels {
             let path = format!("/panels/panel-{id}");
@@ -435,7 +507,7 @@ impl LinuxDesktop {
             "xfce4-panel",
             &format!("{systray}/hide-new-items"),
             "bool",
-            "false",
+            "true",
         )?;
         let audio = format!("/plugins/plugin-{}", plan.pulseaudio_id);
         set_property("xfce4-panel", &audio, "string", "pulseaudio")?;
@@ -450,6 +522,13 @@ impl LinuxDesktop {
                 "bool",
                 "true",
             )?;
+        }
+        for (known, hidden) in [
+            ("known-items", "hidden-items"),
+            ("known-legacy-items", "hidden-legacy-items"),
+        ] {
+            let known = read_string_array(&format!("{systray}/{known}"));
+            set_string_array("xfce4-panel", &format!("{systray}/{hidden}"), &known)?;
         }
         if let Some(id) = plan.legacy_genmon_id {
             let path = format!("/plugins/plugin-{id}");
@@ -521,8 +600,23 @@ impl LinuxDesktop {
             .collect::<Vec<_>>();
         set_array("xfce4-panel", &format!("{panel}/plugin-ids"), "int", &ids)?;
         run("xfce4-panel", &["--restart"])?;
+        if let Some(id) = plan.retired_tray_popup_id {
+            let property = format!("/plugins/plugin-{id}");
+            run(
+                "xfconf-query",
+                &[
+                    "-c",
+                    "xfce4-panel",
+                    "-p",
+                    &property,
+                    "--recursive",
+                    "--reset",
+                ],
+            )?;
+        }
         println!("\n==> Enabling the Super key in Xfce");
         self.configure_ksuperkey(&backup)?;
+        self.disable_pasystray(&backup)?;
         println!(
             "\nComplete: single panel, native workspace previews, current-workspace tasks, session menu and date/time clock configured."
         );
@@ -571,14 +665,14 @@ impl LinuxDesktop {
                 desktop::render_cursor_index as fn(&str) -> String,
             ),
             (
-                self.config_dir.join("gtk-3.0/gtk.css"),
-                "panel-gtk-css.original",
-                desktop::render_panel_css as fn(&str) -> String,
-            ),
-            (
                 self.config_dir.join("archsetup/panel-user.svg"),
                 "panel-user.svg.original",
                 desktop::render_panel_user_svg as fn(&str) -> String,
+            ),
+            (
+                self.config_dir.join("gtk-3.0/gtk.css"),
+                "panel-gtk-css.original",
+                desktop::render_panel_css as fn(&str) -> String,
             ),
         ] {
             if source.is_file() {
@@ -606,14 +700,14 @@ impl LinuxDesktop {
                 "cursor-index.created",
             ),
             (
-                self.config_dir.join("gtk-3.0/gtk.css"),
-                desktop::render_panel_css as fn(&str) -> String,
-                "panel-gtk-css.created",
-            ),
-            (
                 self.config_dir.join("archsetup/panel-user.svg"),
                 desktop::render_panel_user_svg as fn(&str) -> String,
                 "panel-user.svg.created",
+            ),
+            (
+                self.config_dir.join("gtk-3.0/gtk.css"),
+                desktop::render_panel_css as fn(&str) -> String,
+                "panel-gtk-css.created",
             ),
         ] {
             let existed = target.is_file();
@@ -634,6 +728,21 @@ impl LinuxDesktop {
                 }
                 fs::write(&target, &updated).map_err(|error| {
                     format!("could not configure {}: {error}", target.display())
+                })?;
+            }
+        }
+        let retired_script = self.config_dir.join("archsetup/tray-popup.py");
+        if retired_script.is_file() {
+            let content = fs::read_to_string(&retired_script)
+                .map_err(|error| format!("could not read {}: {error}", retired_script.display()))?;
+            if content.contains("Popup for StatusNotifierItem applications in the Xfce panel.")
+                && content.contains("archsetup-tray-popup.sock")
+            {
+                fs::copy(&retired_script, backup.join("tray-popup.py.removed")).map_err(
+                    |error| format!("could not save {}: {error}", retired_script.display()),
+                )?;
+                fs::remove_file(&retired_script).map_err(|error| {
+                    format!("could not remove {}: {error}", retired_script.display())
                 })?;
             }
         }
@@ -710,6 +819,41 @@ impl LinuxDesktop {
         }
         Ok(())
     }
+
+    fn disable_pasystray(&self, backup: &Path) -> Result<(), String> {
+        let target = self.config_dir.join("autostart/pasystray.desktop");
+        if fs::symlink_metadata(&target)
+            .is_ok_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+        {
+            return Err(format!("Unexpected file type: {}", target.display()));
+        }
+        let current = fs::read_to_string(&target).ok();
+        if current.as_deref() != Some(desktop::PASYSTRAY_DISABLED) {
+            fs::create_dir_all(target.parent().ok_or("invalid autostart path")?)
+                .map_err(|error| format!("could not create autostart directory: {error}"))?;
+            if target.is_file() {
+                fs::copy(&target, backup.join("pasystray-autostart.original"))
+                    .map_err(|error| format!("could not save Pasystray autostart: {error}"))?;
+            } else {
+                fs::write(
+                    backup.join("pasystray-autostart.created"),
+                    desktop::PASYSTRAY_DISABLED,
+                )
+                .map_err(|error| format!("could not record Pasystray autostart: {error}"))?;
+            }
+            fs::write(&target, desktop::PASYSTRAY_DISABLED)
+                .map_err(|error| format!("could not disable Pasystray autostart: {error}"))?;
+        }
+        self.stop_pasystray()
+    }
+
+    fn stop_pasystray(&self) -> Result<(), String> {
+        let uid = system::effective_uid()?.to_string();
+        if success("pgrep", &["-u", &uid, "-x", "pasystray"])? {
+            run("pkill", &["-u", &uid, "-x", "pasystray"])?;
+        }
+        Ok(())
+    }
 }
 
 fn parse_ids(output: &str) -> Vec<u32> {
@@ -717,6 +861,52 @@ fn parse_ids(output: &str) -> Vec<u32> {
         .lines()
         .filter_map(|line| line.parse::<u32>().ok())
         .collect()
+}
+
+fn parse_string_array(output: &str) -> Vec<String> {
+    output
+        .split_once("\n\n")
+        .map(|(_, items)| items.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn read_string_array(property: &str) -> Vec<String> {
+    maybe_output("xfconf-query", &["-c", "xfce4-panel", "-p", property])
+        .map(|output| parse_string_array(&output))
+        .unwrap_or_default()
+}
+
+fn set_string_array(channel: &str, property: &str, values: &[String]) -> Result<(), String> {
+    let current = maybe_output("xfconf-query", &["-c", channel, "-p", property]);
+    if current.as_deref().map(parse_string_array).as_deref() == Some(values) {
+        return Ok(());
+    }
+    if values.is_empty() {
+        if current.is_some() {
+            return run("xfconf-query", &["-c", channel, "-p", property, "--reset"]);
+        }
+        return Ok(());
+    }
+    let mut args = vec![
+        "-c".to_owned(),
+        channel.to_owned(),
+        "-p".to_owned(),
+        property.to_owned(),
+        "--create".to_owned(),
+        "--force-array".to_owned(),
+    ];
+    for value in values {
+        args.extend([
+            "--type".to_owned(),
+            "string".to_owned(),
+            "--set".to_owned(),
+            value.clone(),
+        ]);
+    }
+    run(
+        "xfconf-query",
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
 }
 
 fn read_id(path: &str) -> Option<u32> {
@@ -797,6 +987,16 @@ mod tests {
         assert_eq!(
             parse_ids("Value is an array with 2 items:\n0\n1\n"),
             vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn parses_systray_names_without_the_xfconf_header() {
+        assert_eq!(
+            parse_string_array(
+                "Value is an array with 2 items:\n\nblueman\nnetworkmanager applet\n"
+            ),
+            vec!["blueman", "networkmanager applet"]
         );
     }
 }

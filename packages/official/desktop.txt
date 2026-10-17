@@ -4,5 +4,6 @@ xf86-input-libinput
 alsa-utils
 xdg-desktop-portal-gtk
 xfce4-docklike-plugin
+xfce4-whiskermenu-plugin
 xfce4-pulseaudio-plugin
 blueman

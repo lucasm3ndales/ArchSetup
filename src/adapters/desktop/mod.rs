@@ -124,7 +124,7 @@ impl LinuxDesktop {
             }
         }
         for path in [
-            "/usr/share/xfce4/panel/plugins/applicationsmenu.desktop",
+            "/usr/share/xfce4/panel/plugins/whiskermenu.desktop",
             "/usr/share/pixmaps/archlinux-logo.svg",
         ] {
             if !Path::new(path).is_file() {
@@ -213,6 +213,7 @@ impl LinuxDesktop {
         }
         for config_file in [
             self.config_dir.join("autostart/ksuperkey.desktop"),
+            self.config_dir.join("autostart/pasystray.desktop"),
             self.home.join(".Xresources"),
             self.home.join(".icons/default/index.theme"),
             self.config_dir.join("gtk-3.0/gtk.css"),

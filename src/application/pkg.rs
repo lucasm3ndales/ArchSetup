@@ -399,7 +399,7 @@ mod tests {
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let default = select(&RepositorySource, root, &Category::DEFAULT, None).unwrap();
-        assert_eq!(default.official.len(), 36);
+        assert_eq!(default.official.len(), 37);
         assert_eq!(default.aur.len(), 9);
         let development = select(&RepositorySource, root, &[Category::Development], None).unwrap();
         assert_eq!(development.aur, ["visual-studio-code-bin"]);
@@ -430,6 +430,7 @@ mod tests {
                 "alsa-utils",
                 "xdg-desktop-portal-gtk",
                 "xfce4-docklike-plugin",
+                "xfce4-whiskermenu-plugin",
                 "xfce4-pulseaudio-plugin",
                 "blueman"
             ]

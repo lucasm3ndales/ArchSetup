@@ -272,12 +272,22 @@ impl LinuxRestore {
                     backup.join("ksuperkey.desktop"),
                 ),
                 (
+                    self.config_home.join("autostart/pasystray.desktop"),
+                    backup.join("pasystray-autostart.original"),
+                ),
+                (
                     self.home.join(".local/bin/archlinuxsetup-keylocks"),
                     backup.join("archlinuxsetup-keylocks"),
                 ),
             ] {
                 reject_symlink_or_other(&target)?;
                 reject_symlink_or_other(&source)?;
+            }
+            if let Some(saved) = self.oldest_cursor_backup("pasystray-autostart")? {
+                let target = self.config_home.join("autostart/pasystray.desktop");
+                reject_symlink_or_other(&target)?;
+                reject_symlink_or_other(&saved.join("pasystray-autostart.original"))?;
+                reject_symlink_or_other(&saved.join("pasystray-autostart.created"))?;
             }
             for (target, name) in [
                 (self.home.join(".Xresources"), "Xresources"),
@@ -359,6 +369,22 @@ impl LinuxRestore {
                 .any(|line| line == "Name=ArchLinuxSetup Super key")
             {
                 self.restore_user_file(&autostart, &original, restore_backup)?;
+            }
+        }
+        if let Some(saved) = self.oldest_cursor_backup("pasystray-autostart")? {
+            let target = self.config_home.join("autostart/pasystray.desktop");
+            let original = saved.join("pasystray-autostart.original");
+            let created = saved.join("pasystray-autostart.created");
+            if original.is_file() {
+                self.restore_user_file(&target, &original, restore_backup)?;
+            } else if created.is_file() && target.is_file() {
+                let current = fs::read(&target).map_err(|error| error.to_string())?;
+                let expected = fs::read(&created).map_err(|error| error.to_string())?;
+                if current == expected {
+                    self.restore_user_file(&target, &original, restore_backup)?;
+                } else {
+                    println!("Pasystray autostart changed after installation; file preserved.");
+                }
             }
         }
         let keylocks = backup.join("archlinuxsetup-keylocks");

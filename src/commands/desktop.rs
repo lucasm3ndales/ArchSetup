@@ -94,7 +94,7 @@ pub fn run(root: &Path, args: &[OsString]) -> i32 {
     );
     println!("Profile: {}", options.profile.as_deref().unwrap_or("none"));
     println!(
-        "  Xfce: Nordic, Zafiro Dark icons, Hackneyed cursor, dark 40px panel, filled Arch menu button, icon-only tasks (Docklike hover previews when installed), native workspaces, crisp white user icon, larger menus and clock, Super key, and volume/media keys."
+        "  Xfce: Nordic, Zafiro Dark icons, Hackneyed cursor, dark 40px panel, Arch-branded Whisker Menu toggled by Super, icon-only tasks (Docklike hover previews when installed), native workspaces, native expandable tray for Wi-Fi and Bluetooth, PulseAudio control beside the tray, crisp white user icon, larger menus and clock, and volume/media keys."
     );
     if linux.uses_ly() {
         println!("  Login: DOOM fire animation and date/time in Ly; Xfce handles session locking.");
